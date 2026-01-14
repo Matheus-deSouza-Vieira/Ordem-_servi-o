@@ -1,0 +1,7 @@
+streamlit
+pandas
+fpdf
+streamlit-drawable-canvas
+sqlalchemy
+psycopg2-binary
+Pillow
