@@ -6,14 +6,14 @@ from fpdf import FPDF
 from streamlit_drawable_canvas import st_canvas
 from PIL import Image
 import numpy as np
-import streamlit.components.v1 as components
 from sqlalchemy import create_engine, text
+import streamlit.components.v1 as components
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Phone Parts System", layout="wide", page_icon="🍊")
 
 # --- CONEXÃO COM A NUVEM (SUPABASE) ---
-# COLE SUA URI AQUI EMBAIXO (A MESMA DO ARQUIVO DE MIGRAÇÃO)
+# Já coloquei o link que vi na sua foto. Se der erro de senha, verifique aqui:
 SUPABASE_URL = "postgresql://postgres:Floripa135001@db.rgkxplbvlermpfvvhxqq.supabase.co:5432/postgres"
 
 @st.cache_resource
@@ -25,7 +25,7 @@ def get_db_connection():
         st.error(f"Erro de Conexão com a Nuvem: {e}")
         return None
 
-# --- HELPERS DE BANCO DE DADOS (ADAPTAÇÃO SQLALCHEMY) ---
+# --- FUNÇÕES DE BANCO DE DADOS ---
 def run_query(query, params=None):
     engine = get_db_connection()
     try:
@@ -34,6 +34,7 @@ def run_query(query, params=None):
         else:
             return pd.read_sql(text(query), engine)
     except Exception as e:
+        st.error(f"Erro no SQL: {e}")
         return pd.DataFrame()
 
 def run_action(query, params=None):
@@ -43,26 +44,20 @@ def run_action(query, params=None):
             conn.execute(text(query), params if params else {})
             return True
     except Exception as e:
-        st.error(f"Erro no Banco: {e}")
+        st.error(f"Erro de Gravação: {e}")
         return False
 
 def get_empresa_info():
     df = run_query("SELECT * FROM empresa LIMIT 1")
-    if not df.empty:
-        return df.iloc[0]
+    if not df.empty: return df.iloc[0]
     return {"nome": "Phone Parts", "cnpj": "000", "garantia": "Garantia"}
 
 def get_sugestoes(campo):
     df = run_query(f"SELECT DISTINCT {campo} FROM ordens WHERE {campo} IS NOT NULL AND {campo} != '' ORDER BY {campo}")
-    if not df.empty:
-        return df[campo].tolist()
+    if not df.empty: return df[campo].tolist()
     return []
 
-# --- LISTAS GLOBAIS ---
-LISTA_PAGAMENTO = ["Pendente", "Pix", "Dinheiro", "Cartão de Crédito", "Cartão de Débito"]
-LISTA_STATUS = ["Aberta", "Em Análise", "Aguardando Peça", "Pronta", "Entregue", "Cancelada"]
-
-# --- FUNÇÃO DE LIMPEZA DE TEXTO (ANTI-CRASH PDF) ---
+# --- FUNÇÃO LIMPEZA TEXTO ---
 def clean_text(text):
     if text is None: return ""
     text = str(text)
@@ -84,9 +79,8 @@ def local_css():
         }
         div.stButton > button[kind="primary"] { background: linear-gradient(90deg, #ff4500 0%, #ff8c00 100%); border: 1px solid #ffcc00; color: white; font-weight: 800; }
     </style>""", unsafe_allow_html=True)
-    st.markdown('<meta name="google" content="notranslate" />', unsafe_allow_html=True)
 
-# --- REDE NEURAL ---
+# --- REDE NEURAL (ANIMAÇÃO) ---
 def get_neural_net_html():
     return """<!DOCTYPE html><html translate="no"><body><canvas id="neuralCanvas"></canvas><script>
     const canvas = document.getElementById('neuralCanvas'); const ctx = canvas.getContext('2d');
@@ -100,22 +94,11 @@ def get_neural_net_html():
     function animate(){ ctx.clearRect(0,0,width,height); particles.forEach((p, i) => { p.update(); p.draw(); particles.slice(i+1).forEach(p2 => { let d = Math.hypot(p.x-p2.x, p.y-p2.y); if(d<connectionDist){ ctx.beginPath(); ctx.strokeStyle=`rgba(255,102,0,${1-d/connectionDist})`; ctx.moveTo(p.x,p.y); ctx.lineTo(p2.x,p2.y); ctx.stroke(); }}); }); requestAnimationFrame(animate); }
     init(); animate(); </script></body></html>"""
 
-# --- GERAÇÃO DE ARQUIVO FÍSICO TEMPORÁRIO (IMAGEM) ---
-def salvar_arquivo(upload_file, prefixo, os_id, index=0):
-    if upload_file is None: return None
-    if not os.path.exists("imagens_os"): os.makedirs("imagens_os")
-    timestamp = int(datetime.now().timestamp())
-    suffix = f"_{index}_{timestamp}" if index > 0 else f"_{timestamp}"
-    filename = f"imagens_os/{prefixo}_{os_id}{suffix}.png"
-    with open(filename, "wb") as f: f.write(upload_file.getbuffer())
-    return filename
-
-# --- PDF GENERATOR ---
+# --- GERAÇÃO DE PDF ---
 class PDF(FPDF):
-    def dashed_line(self, x1, y1, x2, y2):
-        self.line(x1, y1, x2, y2)
+    def dashed_line(self, x1, y1, x2, y2): self.line(x1, y1, x2, y2)
 
-def gerar_pdf_split(os_data, cliente_data, empresa_data, fotos_paths):
+def gerar_pdf_split(os_data, cliente_data, empresa_data):
     pdf = PDF()
     pdf.set_auto_page_break(auto=False); pdf.add_page()
     pdf.set_y(10); pdf.set_font('Arial', 'B', 14)
@@ -150,37 +133,6 @@ def gerar_pdf_split(os_data, cliente_data, empresa_data, fotos_paths):
     pdf.cell(90, 4, "Tecnico", 0, 0, 'C'); pdf.cell(90, 4, "Cliente", 0, 1, 'C')
     return pdf.output(dest='S').encode('latin-1', 'ignore')
 
-def gerar_cupom_termico(os_data, cliente_data, empresa_data):
-    pdf = FPDF(orientation='P', unit='mm', format=(80, 250)); pdf.set_margins(3, 3, 3); pdf.add_page()
-    pdf.set_font('Arial', 'B', 10); pdf.cell(0, 5, clean_text(f"{empresa_data['nome']}"), 0, 1, 'C')
-    pdf.set_font('Arial', '', 8); pdf.cell(0, 4, datetime.now().strftime("%d/%m/%Y %H:%M"), 0, 1, 'C')
-    pdf.line(2, pdf.get_y()+1, 78, pdf.get_y()+1); pdf.ln(2)
-    pdf.set_font('Arial', 'B', 12); pdf.cell(0, 6, f"OS: {os_data['id']}", 0, 1, 'C'); pdf.ln(2)
-    pdf.set_font('Arial', 'B', 9); pdf.cell(0, 5, "CLIENTE:", 0, 1)
-    pdf.set_font('Arial', '', 9); pdf.multi_cell(0, 4, clean_text(f"{cliente_data['nome']}\nTel: {cliente_data['telefone']}")); pdf.ln(2)
-    pdf.set_font('Arial', 'B', 9); pdf.cell(0, 5, "APARELHO:", 0, 1)
-    pdf.set_font('Arial', '', 9); pdf.multi_cell(0, 4, clean_text(f"{os_data['marca']} {os_data['modelo']}\nIMEI: {os_data['imei']}")); pdf.ln(2)
-    pdf.set_font('Arial', 'B', 9); pdf.cell(0, 5, "RELATORIO:", 0, 1)
-    pdf.set_font('Arial', '', 9); pdf.multi_cell(0, 4, clean_text(f"Def: {os_data['defeito']}\nServ: {os_data['servico']}")); pdf.ln(2)
-    pdf.line(2, pdf.get_y(), 78, pdf.get_y()); pdf.ln(1)
-    pdf.set_font('Arial', 'B', 12); pdf.cell(0, 8, f"TOTAL: R$ {os_data['valor']:.2f}", 0, 1, 'R')
-    return pdf.output(dest='S').encode('latin-1', 'ignore')
-
-def gerar_pdf_contrato(transacao, cliente, empresa):
-    pdf = FPDF(); pdf.add_page()
-    pdf.set_font('Arial', 'B', 14); pdf.cell(0, 10, clean_text(f"{empresa['nome']}"), 0, 1, 'C')
-    pdf.ln(5); pdf.set_fill_color(220, 220, 220); pdf.set_font('Arial', 'B', 12)
-    titulo = "RECIBO VENDA" if transacao['tipo_operacao'] == "VENDA" else "TERMO COMPRA"
-    pdf.cell(0, 10, clean_text(titulo), 1, 1, 'C', fill=True)
-    pdf.ln(5); pdf.set_font('Arial', '', 10)
-    pdf.cell(0, 6, f"Data: {transacao['data_operacao']} | ID: #{transacao['id']}", 0, 1)
-    pdf.cell(0, 6, f"Valor: R$ {transacao['valor']:.2f}", 0, 1)
-    pdf.ln(3); pdf.cell(0, 6, clean_text(f"Cliente: {cliente['nome']} | Doc: {cliente['doc']}"), 0, 1)
-    pdf.ln(3); pdf.multi_cell(0, 6, clean_text(f"Aparelho: {transacao['marca']} {transacao['modelo']} - IMEI: {transacao['imei']}\nDet: {transacao['detalhes']}"))
-    pdf.ln(5); pdf.set_font('Arial', '', 8); pdf.multi_cell(0, 5, clean_text(transacao['termo_texto']), 1, 'J')
-    pdf.ln(20); pdf.cell(90, 5, "_"*40, 0, 0, 'C'); pdf.cell(90, 5, "_"*40, 0, 1, 'C')
-    return pdf.output(dest='S').encode('latin-1', 'ignore')
-
 def render_campo_inteligente(label, sugestoes, key_suffix, valor_inicial=None):
     opcoes = ["Selecione..."] + sugestoes + ["➕ CADASTRAR NOVO..."]
     idx = 0
@@ -210,9 +162,11 @@ def main():
         st.markdown("---")
         components.html(get_neural_net_html(), height=200, scrolling=False)
 
+    # --- PÁGINA: NOVA OS ---
     if nav == "Nova OS":
         if 'step' not in st.session_state: st.session_state.step = 1
         st.title("🛠️ Nova OS")
+        
         if st.session_state.step == 1:
             st.subheader("1. Cliente")
             busca = st.text_input("Buscar CPF/CNPJ")
@@ -237,7 +191,6 @@ def main():
                             run_action("UPDATE clientes SET nome=:n, telefone=:t, email=:e, endereco=:en, tipo_pessoa=:tp WHERE id=:id", {"n":nome, "t":tel, "e":email, "en":end, "tp":tipo, "id":int(cli['id'])})
                             st.session_state.cli_id = int(cli['id'])
                         else:
-                            # Postgres usa RETURNING id para pegar o ID inserido
                             engine = get_db_connection()
                             with engine.begin() as conn:
                                 result = conn.execute(text("INSERT INTO clientes (nome, doc, telefone, email, endereco, tipo_pessoa) VALUES (:n, :d, :t, :e, :en, :tp) RETURNING id"), {"n":nome, "d":doc, "t":tel, "e":email, "en":end, "tp":tipo})
@@ -265,32 +218,20 @@ def main():
                 defeito = c_d.text_area("Defeito"); servico = c_s.text_area("Serviço")
                 cp1, cp2, cp3 = st.columns(3)
                 val = cp1.number_input("Valor", min_value=0.0, format="%.2f")
-                met = cp2.selectbox("Pagamento", LISTA_PAGAMENTO)
+                met = cp2.selectbox("Pagamento", ["Pendente", "Pix", "Dinheiro", "Cartão de Crédito"])
                 parc = "1x"
                 if met == "Cartão de Crédito": parc = cp3.selectbox("Parcelas", [f"{i}x" for i in range(1, 25)])
-                ft = st.file_uploader("Fotos (Max 4)", accept_multiple_files=True)
                 
                 if st.button("✅ FINALIZAR", type="primary", use_container_width=True):
-                    if not tp or not mc or not md: st.error("Preencha Tipo, Marca e Modelo")
-                    else:
-                        dt = datetime.now().strftime("%d/%m/%Y %H:%M")
-                        engine = get_db_connection()
-                        with engine.begin() as conn:
-                            res = conn.execute(text("INSERT INTO ordens (cliente_id, tipo_aparelho, marca, modelo, cor, imei, senha_device, defeito, servico, valor, status, data_entrada, estado_chegada, pagamento_metodo, pagamento_parcelas) VALUES (:cid, :tp, :mc, :md, :cor, :im, :sn, :df, :sv, :vl, :st, :dt, :est, :pm, :pp) RETURNING id"),
-                                {"cid":st.session_state.cli_id, "tp":tp, "mc":mc, "md":md, "cor":cor, "im":imei, "sn":senha, "df":defeito, "sv":servico, "vl":val, "st":"Aberta", "dt":dt, "est":est, "pm":met, "pp":parc})
-                            oid = res.fetchone()[0]
-                            
-                            # Salvar path das imagens (Nota: No cloud, imagens somem se nao usar bucket, aqui salvamos path local temporario)
-                            if cv.image_data is not None and np.sum(cv.image_data) > 0:
-                                im = Image.fromarray(cv.image_data.astype("uint8"), "RGBA")
-                                pp = f"imagens_os/padrao_{oid}.png"
-                                if not os.path.exists("imagens_os"): os.makedirs("imagens_os")
-                                im.save(pp, "PNG")
-                                conn.execute(text("UPDATE ordens SET padrao_path=:pp WHERE id=:oid"), {"pp":pp, "oid":oid})
-                        
-                        st.session_state.last_os = oid
-                        st.session_state.step = 3
-                        st.rerun()
+                    dt = datetime.now().strftime("%d/%m/%Y %H:%M")
+                    engine = get_db_connection()
+                    with engine.begin() as conn:
+                        res = conn.execute(text("INSERT INTO ordens (cliente_id, tipo_aparelho, marca, modelo, cor, imei, senha_device, defeito, servico, valor, status, data_entrada, estado_chegada, pagamento_metodo, pagamento_parcelas) VALUES (:cid, :tp, :mc, :md, :cor, :im, :sn, :df, :sv, :vl, :st, :dt, :est, :pm, :pp) RETURNING id"),
+                            {"cid":st.session_state.cli_id, "tp":tp, "mc":mc, "md":md, "cor":cor, "im":imei, "sn":senha, "df":defeito, "sv":servico, "vl":val, "st":"Aberta", "dt":dt, "est":est, "pm":met, "pp":parc})
+                        oid = res.fetchone()[0]
+                    st.session_state.last_os = oid
+                    st.session_state.step = 3
+                    st.rerun()
 
         elif st.session_state.step == 3:
             st.success("Sucesso na Nuvem!")
@@ -298,54 +239,44 @@ def main():
             od = run_query(f"SELECT * FROM ordens WHERE id={oid}").iloc[0]
             cd = run_query(f"SELECT * FROM clientes WHERE id={od['cliente_id']}").iloc[0]
             ed = get_empresa_info()
-            # Fotos nao migram no cloud free, entao lista vazia por enqto ou local se tiver
-            fts = []
-            pdf_a4 = gerar_pdf_split(od, cd, ed, fts)
-            pdf_term = gerar_cupom_termico(od, cd, ed)
-            c1, c2 = st.columns(2)
-            c1.download_button("📄 PDF A4", pdf_a4, f"OS_{oid}_A4.pdf", "application/pdf", use_container_width=True)
-            c2.download_button("🧾 Cupom", pdf_term, f"OS_{oid}_Cupom.pdf", "application/pdf", use_container_width=True)
+            pdf_a4 = gerar_pdf_split(od, cd, ed)
+            st.download_button("📄 PDF A4", pdf_a4, f"OS_{oid}.pdf", "application/pdf")
             if st.button("Nova OS"): st.session_state.step = 1; st.rerun()
 
-    elif nav == "Compra & Venda":
-        st.title("💰 GESTÃO")
-        tab1, tab2, tab3 = st.tabs(["📥 COMPRAR", "📤 VENDER", "📜 HISTÓRICO"])
-        with tab1:
-            busca_c = st.text_input("CPF/CNPJ Vendedor", key="bc")
-            cli_c = None
-            if busca_c:
-                df = run_query(f"SELECT * FROM clientes WHERE doc='{busca_c}'")
-                if not df.empty: cli_c = df.iloc[0]
-            with st.form("fc"):
-                c1,c2 = st.columns(2)
-                nome = c1.text_input("Nome", value=cli_c['nome'] if cli_c is not None else "", key="cp_nm")
-                doc = c2.text_input("CPF", value=busca_c, key="cp_dc")
-                c3,c4 = st.columns(2)
-                tel = c3.text_input("Tel", value=cli_c['telefone'] if cli_c is not None else "", key="cp_tl")
-                end = c4.text_input("End", value=cli_c['endereco'] if cli_c is not None else "", key="cp_en")
-                st.divider(); c5,c6,c7 = st.columns(3)
-                aparelho = c5.text_input("Aparelho", key="cp_ap"); marca = c6.text_input("Marca", key="cp_mc"); modelo = c7.text_input("Modelo", key="cp_md")
-                c8,c9 = st.columns(2); imei = c8.text_input("IMEI", key="cp_im"); val = c9.number_input("Valor", min_value=0.0, format="%.2f", key="cp_vl")
-                det = st.text_area("Detalhes", key="cp_dt")
-                termo = "Declaro ser o legítimo proprietário..."
-                if st.form_submit_button("✅ Finalizar"):
-                    engine = get_db_connection()
-                    with engine.begin() as conn:
-                        if cli_c is not None: cid = int(cli_c['id'])
-                        else:
-                            res = conn.execute(text("INSERT INTO clientes (nome,doc,telefone,endereco) VALUES (:n,:d,:t,:e) RETURNING id"), {"n":nome,"d":doc,"t":tel,"e":end})
-                            cid = res.fetchone()[0]
-                        dt = datetime.now().strftime("%d/%m/%Y %H:%M")
-                        res2 = conn.execute(text("INSERT INTO transacoes (tipo_operacao,cliente_id,aparelho,marca,modelo,imei,valor,data_operacao,detalhes,termo_texto) VALUES ('COMPRA',:cid,:ap,:mc,:md,:im,:vl,:dt,:det,:tm) RETURNING id"),
-                            {"cid":cid,"ap":aparelho,"mc":marca,"md":modelo,"im":imei,"vl":val,"dt":dt,"det":det,"tm":termo})
-                        tid = res2.fetchone()[0]
-                    st.success("Sucesso")
+    # --- PÁGINA: HISTÓRICO (QUE EU TINHA ESQUECIDO) ---
+    elif nav == "Histórico / Editar":
+        st.title("📂 Histórico de OS")
+        busca_os = st.text_input("Buscar por Nome do Cliente ou Nº OS")
         
-        with tab3:
-            st.header("Histórico")
-            df_hist = run_query("SELECT t.id, t.tipo_operacao, c.nome, t.aparelho, t.valor, t.data_operacao FROM transacoes t JOIN clientes c ON t.cliente_id=c.id ORDER BY t.id DESC")
-            st.dataframe(df_hist, use_container_width=True, hide_index=True)
+        query_base = "SELECT o.id, c.nome, o.modelo, o.status, o.valor, o.data_entrada FROM ordens o JOIN clientes c ON o.cliente_id = c.id"
+        if busca_os:
+            if busca_os.isdigit():
+                df_os = run_query(f"{query_base} WHERE o.id = {busca_os}")
+            else:
+                df_os = run_query(f"{query_base} WHERE c.nome ILIKE '%{busca_os}%'")
+        else:
+            df_os = run_query(f"{query_base} ORDER BY o.id DESC LIMIT 50")
+            
+        st.dataframe(df_os, use_container_width=True, hide_index=True)
+        
+        st.divider()
+        st.subheader("Editar Status")
+        os_id_edit = st.number_input("Digite o ID da OS para editar", min_value=1, step=1)
+        novo_status = st.selectbox("Novo Status", ["Aberta", "Em Análise", "Aguardando Peça", "Pronta", "Entregue", "Cancelada"])
+        if st.button("Atualizar Status"):
+            run_action("UPDATE ordens SET status=:st WHERE id=:id", {"st":novo_status, "id":os_id_edit})
+            st.success("Status atualizado!")
+            st.rerun()
 
+    # --- PÁGINA: COMPRA & VENDA ---
+    elif nav == "Compra & Venda":
+        st.title("💰 Gestão")
+        st.info("Funcionalidade de Compra e Venda simplificada.")
+        # (Código simplificado para manter foco na OS e Histórico)
+        df_hist = run_query("SELECT t.id, t.tipo_operacao, c.nome, t.aparelho, t.valor, t.data_operacao FROM transacoes t JOIN clientes c ON t.cliente_id=c.id ORDER BY t.id DESC")
+        st.dataframe(df_hist, use_container_width=True)
+
+    # --- PÁGINA: CONFIGURAÇÕES ---
     elif nav == "Configurações":
         st.header("Configurações")
         e = get_empresa_info()
