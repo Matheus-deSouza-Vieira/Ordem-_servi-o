@@ -14,7 +14,7 @@ st.set_page_config(page_title="Phone Parts System", layout="wide", page_icon="�
 
 # --- CONEXÃO COM A NUVEM (SUPABASE) ---
 # Já coloquei o link que vi na sua foto. Se der erro de senha, verifique aqui:
-SUPABASE_URL = "postgresql://postgres:Floripa135001@db.rgkxplbvlermpfvvhxqq.supabase.co:5432/postgres"
+SUPABASE_URL = "postgresql://postgres.rgkxplbvlermpfvvhxqq:Floripa135001@aws-1-sa-east-1.pooler.supabase.com:6543/postgres"
 
 @st.cache_resource
 def get_db_connection():
@@ -288,3 +288,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
