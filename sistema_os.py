@@ -12,9 +12,9 @@ import streamlit.components.v1 as components
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Phone Parts System", layout="wide", page_icon="🍊")
 
-# --- CONEXÃO COM A NUVEM (SUPABASE) ---
-# Já coloquei o link que vi na sua foto. Se der erro de senha, verifique aqui:
-SUPABASE_URL = "postgresql://postgres.rgkxplbvlermpfvvhxqq:Floripa135001@aws-1-sa-east-1.pooler.supabase.com:6543/postgres"
+# --- CONEXÃO COM A NUVEM (SUPABASE - POOLER 6543) ---
+# Link corrigido para Transação (Porta 6543)
+SUPABASE_URL = "postgresql://postgres:Floripa135001@db.rgkxplbvlermpfvvhxqq.supabase.co:6543/postgres"
 
 @st.cache_resource
 def get_db_connection():
@@ -29,10 +29,11 @@ def get_db_connection():
 def run_query(query, params=None):
     engine = get_db_connection()
     try:
-        if params:
-            return pd.read_sql(text(query), engine, params=params)
-        else:
-            return pd.read_sql(text(query), engine)
+        with engine.connect() as conn:
+            if params:
+                return pd.read_sql(text(query), conn, params=params)
+            else:
+                return pd.read_sql(text(query), conn)
     except Exception as e:
         st.error(f"Erro no SQL: {e}")
         return pd.DataFrame()
@@ -57,7 +58,6 @@ def get_sugestoes(campo):
     if not df.empty: return df[campo].tolist()
     return []
 
-# --- FUNÇÃO LIMPEZA TEXTO ---
 def clean_text(text):
     if text is None: return ""
     text = str(text)
@@ -191,10 +191,14 @@ def main():
                             run_action("UPDATE clientes SET nome=:n, telefone=:t, email=:e, endereco=:en, tipo_pessoa=:tp WHERE id=:id", {"n":nome, "t":tel, "e":email, "en":end, "tp":tipo, "id":int(cli['id'])})
                             st.session_state.cli_id = int(cli['id'])
                         else:
+                            # Tenta buscar o ID maximo para garantir (correção do bug do ID)
+                            max_id_df = run_query("SELECT COALESCE(MAX(id), 0) + 1 as novo_id FROM clientes")
+                            novo_id_cli = int(max_id_df.iloc[0]['novo_id'])
                             engine = get_db_connection()
                             with engine.begin() as conn:
-                                result = conn.execute(text("INSERT INTO clientes (nome, doc, telefone, email, endereco, tipo_pessoa) VALUES (:n, :d, :t, :e, :en, :tp) RETURNING id"), {"n":nome, "d":doc, "t":tel, "e":email, "en":end, "tp":tipo})
-                                st.session_state.cli_id = result.fetchone()[0]
+                                conn.execute(text("INSERT INTO clientes (id, nome, doc, telefone, email, endereco, tipo_pessoa) VALUES (:id, :n, :d, :t, :e, :en, :tp)"), 
+                                    {"id": novo_id_cli, "n":nome, "d":doc, "t":tel, "e":email, "en":end, "tp":tipo})
+                            st.session_state.cli_id = novo_id_cli
                         st.session_state.cli_nome = nome
                         st.session_state.step = 2
                         st.rerun()
@@ -224,26 +228,40 @@ def main():
                 
                 if st.button("✅ FINALIZAR", type="primary", use_container_width=True):
                     dt = datetime.now().strftime("%d/%m/%Y %H:%M")
-                    engine = get_db_connection()
-                    with engine.begin() as conn:
-                        res = conn.execute(text("INSERT INTO ordens (cliente_id, tipo_aparelho, marca, modelo, cor, imei, senha_device, defeito, servico, valor, status, data_entrada, estado_chegada, pagamento_metodo, pagamento_parcelas) VALUES (:cid, :tp, :mc, :md, :cor, :im, :sn, :df, :sv, :vl, :st, :dt, :est, :pm, :pp) RETURNING id"),
-                            {"cid":st.session_state.cli_id, "tp":tp, "mc":mc, "md":md, "cor":cor, "im":imei, "sn":senha, "df":defeito, "sv":servico, "vl":val, "st":"Aberta", "dt":dt, "est":est, "pm":met, "pp":parc})
-                        oid = res.fetchone()[0]
-                    st.session_state.last_os = oid
-                    st.session_state.step = 3
-                    st.rerun()
+                    # CORREÇÃO DO ERRO 'NONE': GERA O ID MANUALMENTE
+                    try:
+                        max_os_df = run_query("SELECT COALESCE(MAX(id), 0) + 1 as novo_id FROM ordens")
+                        novo_id_os = int(max_os_df.iloc[0]['novo_id'])
+                        
+                        engine = get_db_connection()
+                        with engine.begin() as conn:
+                            conn.execute(text("INSERT INTO ordens (id, cliente_id, tipo_aparelho, marca, modelo, cor, imei, senha_device, defeito, servico, valor, status, data_entrada, estado_chegada, pagamento_metodo, pagamento_parcelas) VALUES (:id, :cid, :tp, :mc, :md, :cor, :im, :sn, :df, :sv, :vl, :st, :dt, :est, :pm, :pp)"),
+                                {"id": novo_id_os, "cid":st.session_state.cli_id, "tp":tp, "mc":mc, "md":md, "cor":cor, "im":imei, "sn":senha, "df":defeito, "sv":servico, "vl":val, "st":"Aberta", "dt":dt, "est":est, "pm":met, "pp":parc})
+                        
+                        st.session_state.last_os = novo_id_os
+                        st.session_state.step = 3
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao salvar: {e}")
 
         elif st.session_state.step == 3:
             st.success("Sucesso na Nuvem!")
-            oid = st.session_state.last_os
-            od = run_query(f"SELECT * FROM ordens WHERE id={oid}").iloc[0]
-            cd = run_query(f"SELECT * FROM clientes WHERE id={od['cliente_id']}").iloc[0]
-            ed = get_empresa_info()
-            pdf_a4 = gerar_pdf_split(od, cd, ed)
-            st.download_button("📄 PDF A4", pdf_a4, f"OS_{oid}.pdf", "application/pdf")
+            oid = st.session_state.get('last_os')
+            if oid:
+                try:
+                    od = run_query(f"SELECT * FROM ordens WHERE id={oid}").iloc[0]
+                    cd = run_query(f"SELECT * FROM clientes WHERE id={od['cliente_id']}").iloc[0]
+                    ed = get_empresa_info()
+                    pdf_a4 = gerar_pdf_split(od, cd, ed)
+                    st.download_button("📄 PDF A4", pdf_a4, f"OS_{oid}.pdf", "application/pdf")
+                except Exception as e:
+                    st.error(f"Erro ao gerar PDF: {e}")
+            else:
+                st.error("Erro: ID da OS não encontrado.")
+                
             if st.button("Nova OS"): st.session_state.step = 1; st.rerun()
 
-    # --- PÁGINA: HISTÓRICO (QUE EU TINHA ESQUECIDO) ---
+    # --- PÁGINA: HISTÓRICO ---
     elif nav == "Histórico / Editar":
         st.title("📂 Histórico de OS")
         busca_os = st.text_input("Buscar por Nome do Cliente ou Nº OS")
@@ -271,8 +289,7 @@ def main():
     # --- PÁGINA: COMPRA & VENDA ---
     elif nav == "Compra & Venda":
         st.title("💰 Gestão")
-        st.info("Funcionalidade de Compra e Venda simplificada.")
-        # (Código simplificado para manter foco na OS e Histórico)
+        st.info("Funcionalidade de Compra e Venda.")
         df_hist = run_query("SELECT t.id, t.tipo_operacao, c.nome, t.aparelho, t.valor, t.data_operacao FROM transacoes t JOIN clientes c ON t.cliente_id=c.id ORDER BY t.id DESC")
         st.dataframe(df_hist, use_container_width=True)
 
@@ -288,4 +305,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
