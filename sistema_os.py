@@ -13,7 +13,6 @@ import streamlit.components.v1 as components
 st.set_page_config(page_title="Phone Parts System", layout="wide", page_icon="🍊")
 
 # --- CONEXÃO COM A NUVEM (SUPABASE - POOLER 6543) ---
-# Link corrigido para Transação (Porta 6543)
 SUPABASE_URL = "postgresql://postgres:Floripa135001@db.rgkxplbvlermpfvvhxqq.supabase.co:6543/postgres"
 
 @st.cache_resource
@@ -78,6 +77,7 @@ def local_css():
             background-color: #121212 !important; color: #ffffff !important; border: 1px solid #444 !important; border-radius: 4px; caret-color: #ff6600;
         }
         div.stButton > button[kind="primary"] { background: linear-gradient(90deg, #ff4500 0%, #ff8c00 100%); border: 1px solid #ffcc00; color: white; font-weight: 800; }
+        div.stButton > button[kind="secondary"] { background-color: #ff0000; color: white; border: 1px solid #990000; }
     </style>""", unsafe_allow_html=True)
 
 # --- REDE NEURAL (ANIMAÇÃO) ---
@@ -162,7 +162,7 @@ def main():
         st.markdown("---")
         components.html(get_neural_net_html(), height=200, scrolling=False)
 
-    # --- PÁGINA: NOVA OS ---
+    # --- PÁGINA: NOVA OS (COM ID MANUAL V37) ---
     if nav == "Nova OS":
         if 'step' not in st.session_state: st.session_state.step = 1
         st.title("🛠️ Nova OS")
@@ -191,7 +191,7 @@ def main():
                             run_action("UPDATE clientes SET nome=:n, telefone=:t, email=:e, endereco=:en, tipo_pessoa=:tp WHERE id=:id", {"n":nome, "t":tel, "e":email, "en":end, "tp":tipo, "id":int(cli['id'])})
                             st.session_state.cli_id = int(cli['id'])
                         else:
-                            # Tenta buscar o ID maximo para garantir (correção do bug do ID)
+                            # ID Manual Clientes
                             max_id_df = run_query("SELECT COALESCE(MAX(id), 0) + 1 as novo_id FROM clientes")
                             novo_id_cli = int(max_id_df.iloc[0]['novo_id'])
                             engine = get_db_connection()
@@ -228,7 +228,7 @@ def main():
                 
                 if st.button("✅ FINALIZAR", type="primary", use_container_width=True):
                     dt = datetime.now().strftime("%d/%m/%Y %H:%M")
-                    # CORREÇÃO DO ERRO 'NONE': GERA O ID MANUALMENTE
+                    # ID Manual OS
                     try:
                         max_os_df = run_query("SELECT COALESCE(MAX(id), 0) + 1 as novo_id FROM ordens")
                         novo_id_os = int(max_os_df.iloc[0]['novo_id'])
@@ -258,33 +258,77 @@ def main():
                     st.error(f"Erro ao gerar PDF: {e}")
             else:
                 st.error("Erro: ID da OS não encontrado.")
-                
             if st.button("Nova OS"): st.session_state.step = 1; st.rerun()
 
-    # --- PÁGINA: HISTÓRICO ---
+    # --- PÁGINA: HISTÓRICO / EDITAR (ATUALIZADA) ---
     elif nav == "Histórico / Editar":
-        st.title("📂 Histórico de OS")
-        busca_os = st.text_input("Buscar por Nome do Cliente ou Nº OS")
+        st.title("📂 Histórico e Edição")
         
+        # 1. Tabela de Busca Geral
+        st.subheader("🔍 Pesquisar")
+        busca_os = st.text_input("Buscar por Nome do Cliente ou Nº OS")
         query_base = "SELECT o.id, c.nome, o.modelo, o.status, o.valor, o.data_entrada FROM ordens o JOIN clientes c ON o.cliente_id = c.id"
+        
         if busca_os:
             if busca_os.isdigit():
                 df_os = run_query(f"{query_base} WHERE o.id = {busca_os}")
             else:
                 df_os = run_query(f"{query_base} WHERE c.nome ILIKE '%{busca_os}%'")
         else:
-            df_os = run_query(f"{query_base} ORDER BY o.id DESC LIMIT 50")
-            
+            df_os = run_query(f"{query_base} ORDER BY o.id DESC LIMIT 20")
         st.dataframe(df_os, use_container_width=True, hide_index=True)
         
-        st.divider()
-        st.subheader("Editar Status")
-        os_id_edit = st.number_input("Digite o ID da OS para editar", min_value=1, step=1)
-        novo_status = st.selectbox("Novo Status", ["Aberta", "Em Análise", "Aguardando Peça", "Pronta", "Entregue", "Cancelada"])
-        if st.button("Atualizar Status"):
-            run_action("UPDATE ordens SET status=:st WHERE id=:id", {"st":novo_status, "id":os_id_edit})
-            st.success("Status atualizado!")
-            st.rerun()
+        st.markdown("---")
+        
+        # 2. Área de Gerenciamento Completo
+        st.subheader("📝 Gerenciar OS (Editar ou Excluir)")
+        col_sel, col_btn = st.columns([1, 2])
+        id_editor = col_sel.number_input("Digite o ID da OS para gerenciar", min_value=1, step=1)
+        
+        if id_editor:
+            dados_completos = run_query(f"""
+                SELECT o.*, c.id as cid, c.nome, c.telefone, c.email 
+                FROM ordens o 
+                JOIN clientes c ON o.cliente_id = c.id 
+                WHERE o.id = {id_editor}
+            """)
+
+            if not dados_completos.empty:
+                item = dados_completos.iloc[0]
+                
+                with st.expander(f"⚙️ Editar Dados: OS #{id_editor} - {item['nome']}", expanded=True):
+                    with st.form("edit_form"):
+                        st.markdown("**Dados do Cliente**")
+                        c1, c2 = st.columns(2)
+                        new_nome = c1.text_input("Nome", item['nome'])
+                        new_tel = c2.text_input("Telefone", item['telefone'])
+                        
+                        st.markdown("**Dados da Ordem**")
+                        c3, c4, c5 = st.columns(3)
+                        new_modelo = c3.text_input("Modelo", item['modelo'])
+                        new_valor = c4.number_input("Valor (R$)", value=float(item['valor']), format="%.2f")
+                        status_list = ["Aberta", "Em Análise", "Aguardando Peça", "Pronta", "Entregue", "Cancelada"]
+                        idx_status = status_list.index(item['status']) if item['status'] in status_list else 0
+                        new_status = c5.selectbox("Status", status_list, index=idx_status)
+                        
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        if st.form_submit_button("💾 SALVAR ALTERAÇÕES", type="primary", use_container_width=True):
+                            # Atualiza Cliente
+                            run_action("UPDATE clientes SET nome=:n, telefone=:t WHERE id=:id", {"n":new_nome, "t":new_tel, "id":int(item['cid'])})
+                            # Atualiza OS
+                            run_action("UPDATE ordens SET modelo=:m, valor=:v, status=:s WHERE id=:id", {"m":new_modelo, "v":new_valor, "s":new_status, "id":id_editor})
+                            st.success("✅ Dados Atualizados com Sucesso!")
+                            st.rerun()
+
+                # Botão de Excluir (Fora do formulário para segurança)
+                st.markdown("#### Zona de Perigo")
+                c_del_1, c_del_2 = st.columns([3, 1])
+                if c_del_2.button("🗑️ APAGAR ESTA OS", type="secondary", use_container_width=True):
+                    run_action("DELETE FROM ordens WHERE id=:id", {"id":id_editor})
+                    st.warning(f"OS {id_editor} apagada permanentemente.")
+                    st.rerun()
+            else:
+                st.info("Nenhuma OS encontrada com esse ID.")
 
     # --- PÁGINA: COMPRA & VENDA ---
     elif nav == "Compra & Venda":
