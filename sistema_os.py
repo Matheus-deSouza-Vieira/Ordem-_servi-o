@@ -8,25 +8,35 @@ from PIL import Image
 import numpy as np
 from sqlalchemy import create_engine, text
 import streamlit.components.v1 as components
+import socket
+
+# --- HACK PARA FORÇAR IPV4 (CORREÇÃO DO ERRO DE CONEXÃO) ---
+# Isso obriga o Streamlit a usar o "caminho velho" da internet que nunca falha
+orig_getaddrinfo = socket.getaddrinfo
+def getaddrinfoIPv4(host, port, family=0, type=0, proto=0, flags=0):
+    return orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+socket.getaddrinfo = getaddrinfoIPv4
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Phone Parts System", layout="wide", page_icon="🍊")
 
-# --- CONEXÃO COM A NUVEM (SUPABASE - POOLER 6543) ---
+# --- CONEXÃO COM A NUVEM (SUPABASE) ---
 SUPABASE_URL = "postgresql://postgres:Floripa135001@db.rgkxplbvlermpfvvhxqq.supabase.co:6543/postgres"
 
 @st.cache_resource
 def get_db_connection():
     try:
-        engine = create_engine(SUPABASE_URL)
+        # Adicionei connect_timeout para ele não ficar esperando infinitamente
+        engine = create_engine(SUPABASE_URL, connect_args={'connect_timeout': 10})
         return engine
     except Exception as e:
         st.error(f"Erro de Conexão com a Nuvem: {e}")
         return None
 
-# --- FUNÇÕES DE BANCO DE DADOS ---
+# --- FUNÇÕES DE BANCO DE DADOS BLINDADAS ---
 def run_query(query, params=None):
     engine = get_db_connection()
+    if engine is None: return pd.DataFrame() # Se não tem conexão, retorna vazio sem quebrar
     try:
         with engine.connect() as conn:
             if params:
@@ -39,6 +49,7 @@ def run_query(query, params=None):
 
 def run_action(query, params=None):
     engine = get_db_connection()
+    if engine is None: return False
     try:
         with engine.begin() as conn:
             conn.execute(text(query), params if params else {})
@@ -162,7 +173,7 @@ def main():
         st.markdown("---")
         components.html(get_neural_net_html(), height=200, scrolling=False)
 
-    # --- PÁGINA: NOVA OS (COM ID MANUAL V37) ---
+    # --- PÁGINA: NOVA OS ---
     if nav == "Nova OS":
         if 'step' not in st.session_state: st.session_state.step = 1
         st.title("🛠️ Nova OS")
@@ -191,21 +202,31 @@ def main():
                             run_action("UPDATE clientes SET nome=:n, telefone=:t, email=:e, endereco=:en, tipo_pessoa=:tp WHERE id=:id", {"n":nome, "t":tel, "e":email, "en":end, "tp":tipo, "id":int(cli['id'])})
                             st.session_state.cli_id = int(cli['id'])
                         else:
-                            # ID Manual Clientes
-                            max_id_df = run_query("SELECT COALESCE(MAX(id), 0) + 1 as novo_id FROM clientes")
-                            novo_id_cli = int(max_id_df.iloc[0]['novo_id'])
+                            # ID Manual Clientes (Blindado contra falha de conexão)
+                            try:
+                                max_id_df = run_query("SELECT COALESCE(MAX(id), 0) + 1 as novo_id FROM clientes")
+                                if max_id_df.empty or max_id_df.iloc[0]['novo_id'] is None:
+                                    novo_id_cli = 1
+                                else:
+                                    novo_id_cli = int(max_id_df.iloc[0]['novo_id'])
+                            except:
+                                novo_id_cli = 1 # Se tudo falhar, tenta salvar como 1
+                            
                             engine = get_db_connection()
-                            with engine.begin() as conn:
-                                conn.execute(text("INSERT INTO clientes (id, nome, doc, telefone, email, endereco, tipo_pessoa) VALUES (:id, :n, :d, :t, :e, :en, :tp)"), 
-                                    {"id": novo_id_cli, "n":nome, "d":doc, "t":tel, "e":email, "en":end, "tp":tipo})
-                            st.session_state.cli_id = novo_id_cli
-                        st.session_state.cli_nome = nome
-                        st.session_state.step = 2
-                        st.rerun()
+                            if engine:
+                                with engine.begin() as conn:
+                                    conn.execute(text("INSERT INTO clientes (id, nome, doc, telefone, email, endereco, tipo_pessoa) VALUES (:id, :n, :d, :t, :e, :en, :tp)"), 
+                                        {"id": novo_id_cli, "n":nome, "d":doc, "t":tel, "e":email, "en":end, "tp":tipo})
+                                st.session_state.cli_id = novo_id_cli
+                                st.session_state.cli_nome = nome
+                                st.session_state.step = 2
+                                st.rerun()
+                            else:
+                                st.error("Sem conexão para salvar cliente.")
 
         elif st.session_state.step == 2:
             if st.button("⬅️ Voltar"): st.session_state.step = 1; st.rerun()
-            st.subheader(f"2. Aparelho ({st.session_state.cli_nome})")
+            st.subheader(f"2. Aparelho ({st.session_state.get('cli_nome', 'Cliente')})")
             with st.container():
                 c1, c2, c3 = st.columns(3)
                 tp = render_campo_inteligente("Tipo", get_sugestoes('tipo_aparelho'), "tp")
@@ -228,43 +249,56 @@ def main():
                 
                 if st.button("✅ FINALIZAR", type="primary", use_container_width=True):
                     dt = datetime.now().strftime("%d/%m/%Y %H:%M")
-                    # ID Manual OS
+                    # ID Manual OS (Blindado)
                     try:
                         max_os_df = run_query("SELECT COALESCE(MAX(id), 0) + 1 as novo_id FROM ordens")
-                        novo_id_os = int(max_os_df.iloc[0]['novo_id'])
+                        if max_os_df.empty or max_os_df.iloc[0]['novo_id'] is None:
+                            novo_id_os = 1
+                        else:
+                            novo_id_os = int(max_os_df.iloc[0]['novo_id'])
                         
                         engine = get_db_connection()
-                        with engine.begin() as conn:
-                            conn.execute(text("INSERT INTO ordens (id, cliente_id, tipo_aparelho, marca, modelo, cor, imei, senha_device, defeito, servico, valor, status, data_entrada, estado_chegada, pagamento_metodo, pagamento_parcelas) VALUES (:id, :cid, :tp, :mc, :md, :cor, :im, :sn, :df, :sv, :vl, :st, :dt, :est, :pm, :pp)"),
-                                {"id": novo_id_os, "cid":st.session_state.cli_id, "tp":tp, "mc":mc, "md":md, "cor":cor, "im":imei, "sn":senha, "df":defeito, "sv":servico, "vl":val, "st":"Aberta", "dt":dt, "est":est, "pm":met, "pp":parc})
-                        
-                        st.session_state.last_os = novo_id_os
-                        st.session_state.step = 3
-                        st.rerun()
+                        if engine:
+                            with engine.begin() as conn:
+                                conn.execute(text("INSERT INTO ordens (id, cliente_id, tipo_aparelho, marca, modelo, cor, imei, senha_device, defeito, servico, valor, status, data_entrada, estado_chegada, pagamento_metodo, pagamento_parcelas) VALUES (:id, :cid, :tp, :mc, :md, :cor, :im, :sn, :df, :sv, :vl, :st, :dt, :est, :pm, :pp)"),
+                                    {"id": novo_id_os, "cid":st.session_state.cli_id, "tp":tp, "mc":mc, "md":md, "cor":cor, "im":imei, "sn":senha, "df":defeito, "sv":servico, "vl":val, "st":"Aberta", "dt":dt, "est":est, "pm":met, "pp":parc})
+                            
+                            st.session_state.last_os = novo_id_os
+                            st.session_state.step = 3
+                            st.rerun()
+                        else:
+                            st.error("Sem conexão para salvar OS.")
                     except Exception as e:
                         st.error(f"Erro ao salvar: {e}")
 
         elif st.session_state.step == 3:
             st.success("Sucesso na Nuvem!")
             oid = st.session_state.get('last_os')
-            if oid:
+            
+            # PROTEÇÃO CONTRA O ERRO ID=NONE
+            if not oid:
+                st.error("Não foi possível recuperar a OS recém-criada.")
+                if st.button("Voltar ao Início"): st.session_state.step = 1; st.rerun()
+            else:
                 try:
-                    od = run_query(f"SELECT * FROM ordens WHERE id={oid}").iloc[0]
-                    cd = run_query(f"SELECT * FROM clientes WHERE id={od['cliente_id']}").iloc[0]
-                    ed = get_empresa_info()
-                    pdf_a4 = gerar_pdf_split(od, cd, ed)
-                    st.download_button("📄 PDF A4", pdf_a4, f"OS_{oid}.pdf", "application/pdf")
+                    od = run_query(f"SELECT * FROM ordens WHERE id={oid}")
+                    if not od.empty:
+                        od = od.iloc[0]
+                        cd = run_query(f"SELECT * FROM clientes WHERE id={od['cliente_id']}").iloc[0]
+                        ed = get_empresa_info()
+                        pdf_a4 = gerar_pdf_split(od, cd, ed)
+                        st.download_button("📄 PDF A4", pdf_a4, f"OS_{oid}.pdf", "application/pdf")
+                    else:
+                        st.warning("Aguardando sincronização do banco...")
                 except Exception as e:
                     st.error(f"Erro ao gerar PDF: {e}")
-            else:
-                st.error("Erro: ID da OS não encontrado.")
+                
             if st.button("Nova OS"): st.session_state.step = 1; st.rerun()
 
-    # --- PÁGINA: HISTÓRICO / EDITAR (ATUALIZADA) ---
+    # --- PÁGINA: HISTÓRICO / EDITAR ---
     elif nav == "Histórico / Editar":
         st.title("📂 Histórico e Edição")
         
-        # 1. Tabela de Busca Geral
         st.subheader("🔍 Pesquisar")
         busca_os = st.text_input("Buscar por Nome do Cliente ou Nº OS")
         query_base = "SELECT o.id, c.nome, o.modelo, o.status, o.valor, o.data_entrada FROM ordens o JOIN clientes c ON o.cliente_id = c.id"
@@ -280,7 +314,6 @@ def main():
         
         st.markdown("---")
         
-        # 2. Área de Gerenciamento Completo
         st.subheader("📝 Gerenciar OS (Editar ou Excluir)")
         col_sel, col_btn = st.columns([1, 2])
         id_editor = col_sel.number_input("Digite o ID da OS para gerenciar", min_value=1, step=1)
@@ -313,14 +346,11 @@ def main():
                         
                         st.markdown("<br>", unsafe_allow_html=True)
                         if st.form_submit_button("💾 SALVAR ALTERAÇÕES", type="primary", use_container_width=True):
-                            # Atualiza Cliente
                             run_action("UPDATE clientes SET nome=:n, telefone=:t WHERE id=:id", {"n":new_nome, "t":new_tel, "id":int(item['cid'])})
-                            # Atualiza OS
                             run_action("UPDATE ordens SET modelo=:m, valor=:v, status=:s WHERE id=:id", {"m":new_modelo, "v":new_valor, "s":new_status, "id":id_editor})
                             st.success("✅ Dados Atualizados com Sucesso!")
                             st.rerun()
 
-                # Botão de Excluir (Fora do formulário para segurança)
                 st.markdown("#### Zona de Perigo")
                 c_del_1, c_del_2 = st.columns([3, 1])
                 if c_del_2.button("🗑️ APAGAR ESTA OS", type="secondary", use_container_width=True):
